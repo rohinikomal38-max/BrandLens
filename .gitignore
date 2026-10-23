@@ -1,4 +1,24 @@
-# Dependencies
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python test and coverage files
+.pytest_cache/
+.coverage
+htmlcov/
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Node.js dependencies
 node_modules/
 frontend/node_modules/
 
