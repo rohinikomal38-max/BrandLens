@@ -90,15 +90,26 @@ function App() {
       return;
     }
 
-    const result = inspectDraft(draft, rules);
-    setFindings(result);
-    setReviewed(true);
-    setStatus("In review");
+   const result = inspectDraft(draft, rules);
+setFindings(result);
+setReviewed(true);
+
+const hasHighSeverityFinding = result.some(
+  (finding) => finding.severity === "High",
+);
+
+setStatus(
+  hasHighSeverityFinding
+    ? "Needs review"
+    : result.length > 0
+      ? "Advisory review"
+      : "Ready for approval",
+);
     setNotice(
-      result.length
-        ? `Review complete: ${result.length} issue(s) found.`
-        : "Review complete: no matching demo rules were found.",
-    );
+  result.length === 0
+    ? "Review complete: no matching demo rules were found. Human review is still recommended."
+    : `Review complete: ${result.length} finding(s) detected. Please review each finding before making a decision.`,
+);
     setHistory((items) => [
       `${new Date().toLocaleString()} — Draft reviewed (${result.length} finding(s))`,
       ...items,
