@@ -1,6 +1,35 @@
 
 import { useState } from "react";
 import "./App.css";
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+
+type ApiDraft = {
+  id: number;
+  title: string;
+  content: string;
+  content_type: string | null;
+  status: string;
+};
+
+type ApiFinding = {
+  type: string;
+  severity: string;
+  message: string;
+  matched_text: string | null;
+  explanation: string | null;
+  evidence: string | null;
+  suggestion: string | null;
+  advisory: boolean;
+  start: number | null;
+  end: number | null;
+};
+
+type ApiReview = {
+  status: string;
+  has_issues: boolean;
+  findings: ApiFinding[];
+};
 
 type Finding = {
   id: number;
@@ -43,30 +72,7 @@ const initialRules: Rule[] = [
   },
 ];
 
-const inspectDraft = (text: string, rules: Rule[]): Finding[] => {
-  const findings: Finding[] = [];
 
-  rules.forEach((rule) => {
-    const escaped = rule.blockedPhrase.replace(
-      /[.*+?^${}()|[\]\\]/g,
-      "\\$&",
-    );
-    const match = new RegExp(escaped, "i").exec(text);
-
-    if (match) {
-      findings.push({
-        id: rule.id,
-        phrase: match[0],
-        severity: rule.id === 1 ? "High" : "Medium",
-        explanation: rule.description,
-        suggestion: rule.suggestion,
-        rule: rule.title,
-      });
-    }
-  });
-
-  return findings;
-};
 
 function App() {
   const [page, setPage] = useState<"Review" | "Brand rules" | "History">(
@@ -83,48 +89,135 @@ function App() {
   const [history, setHistory] = useState<string[]>([]);
   const [rulePhrase, setRulePhrase] = useState("");
   const [ruleSuggestion, setRuleSuggestion] = useState("");
+const [isReviewing, setIsReviewing] = useState(false);
+ const runReview = async () => {
+  if (!draft.trim()) {
+    setNotice("Add some content before starting the review.");
+    return;
+  }
 
-  const runReview = () => {
-    if (!draft.trim()) {
-      setNotice("Add some content before starting the review.");
-      return;
+  if (draft.length > 10000) {
+    setNotice("Review content must be 10,000 characters or fewer.");
+    return;
+  }
+
+  setIsReviewing(true);
+  setNotice("");
+
+  try {
+   // Create a fresh backend draft for every review so the saved
+// content always matches the text being reviewed.
+const draftResponse = await fetch(`${API_BASE_URL}/api/drafts/`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    title: `${contentType} draft`,
+    content: draft,
+    content_type: contentType,
+  }),
+});
+
+if (!draftResponse.ok) {
+  const error = await draftResponse.json().catch(() => null);
+  throw new Error(
+    error?.detail || `Draft creation failed (${draftResponse.status}).`,
+  );
+}
+
+const createdDraft: ApiDraft = await draftResponse.json();
+const draftId = createdDraft.id;
+
+
+    // Ask the real backend review engine to evaluate the draft.
+    const reviewResponse = await fetch(`${API_BASE_URL}/api/review`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        draft_id: draftId,
+        text: draft,
+      }),
+    });
+
+    if (!reviewResponse.ok) {
+      const error = await reviewResponse.json().catch(() => null);
+      throw new Error(
+        error?.detail || `Review failed (${reviewResponse.status}).`,
+      );
     }
 
-   const result = inspectDraft(draft, rules);
-setFindings(result);
-setReviewed(true);
+    const result: ApiReview = await reviewResponse.json();
 
-const hasHighSeverityFinding = result.some(
-  (finding) => finding.severity === "High",
-);
+    const mappedFindings: Finding[] = result.findings.map(
+      (finding, index) => {
+        const severity = finding.severity.toLowerCase();
 
-setStatus(
-  hasHighSeverityFinding
-    ? "Needs review"
-    : result.length > 0
-      ? "Advisory review"
-      : "Ready for approval",
-);
+        return {
+          id: index + 1,
+          phrase: finding.matched_text || finding.message,
+          severity:
+            severity === "high" || severity === "critical"
+              ? "High"
+              : severity === "low" ||
+                  severity === "info" ||
+                  severity === "informational"
+                ? "Low"
+                : "Medium",
+          explanation:
+            finding.explanation || finding.message,
+          suggestion:
+            finding.suggestion || "Review this wording manually.",
+          rule: finding.type,
+        };
+      },
+    );
+
+    setFindings(mappedFindings);
+    setReviewed(true);
+
+    const backendStatus = result.status.toLowerCase();
+
+    setStatus(
+      backendStatus === "needs_review"
+        ? "Needs review"
+        : backendStatus === "advisory_review"
+          ? "Advisory review"
+          : "Ready for approval",
+    );
+
     setNotice(
-  result.length === 0
-    ? "Review complete: no matching demo rules were found. Human review is still recommended."
-    : `Review complete: ${result.length} finding(s) detected. Please review each finding before making a decision.`,
-);
+      mappedFindings.length === 0
+        ? "Backend review complete. No findings were returned. Human review is still recommended."
+        : `Backend review complete: ${mappedFindings.length} finding(s) detected.`,
+    );
+
     setHistory((items) => [
-      `${new Date().toLocaleString()} — Draft reviewed (${result.length} finding(s))`,
+      `${new Date().toLocaleString()} — Backend review completed (${mappedFindings.length} finding(s))`,
       ...items,
     ]);
-  };
+  } catch (error) {
+    setNotice(
+      error instanceof Error
+        ? error.message
+        : "Unable to connect to the BrandLens API.",
+    );
+      } finally {
+    setIsReviewing(false);
+  }
+};
 
-  const applySuggestion = (finding: Finding) => {
+   const applySuggestion = (finding: Finding) => {
     const escaped = finding.phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const updated = draft.replace(new RegExp(escaped, "i"), finding.suggestion);
+    const updated = draft.replace(
+      new RegExp(escaped, "i"),
+      finding.suggestion,
+    );
 
     setDraft(updated);
     setFindings((items) => items.filter((item) => item.id !== finding.id));
     setNotice("Suggestion applied. Review the updated draft before approval.");
     setStatus("Changes made");
   };
+
 
   const addRule = () => {
     if (!rulePhrase.trim() || !ruleSuggestion.trim()) {
@@ -308,10 +401,14 @@ setStatus(
                     <span>{draft.length} characters</span>
                     <span>{draft.trim() ? draft.trim().split(/\s+/).length : 0} words</span>
                   </div>
+<button
+  className="primary-button full-button"
+  onClick={runReview}
+  disabled={isReviewing}
+>
+  <span>✳</span> {isReviewing ? "Reviewing..." : "Review content"}
+</button>
 
-                  <button className="primary-button full-button" onClick={runReview}>
-                    <span>✳</span> Review content
-                  </button>
                   <p className="helper-text">
                     Demo rule-based review. No content is published automatically.
                   </p>
