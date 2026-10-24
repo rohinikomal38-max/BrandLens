@@ -1,35 +1,19 @@
-
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import "./App.css";
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
-
-type ApiDraft = {
-  id: number;
-  title: string;
-  content: string;
-  content_type: string | null;
-  status: string;
-};
-
-type ApiFinding = {
-  type: string;
-  severity: string;
-  message: string;
-  matched_text: string | null;
-  explanation: string | null;
-  evidence: string | null;
-  suggestion: string | null;
-  advisory: boolean;
-  start: number | null;
-  end: number | null;
-};
-
-type ApiReview = {
-  status: string;
-  has_issues: boolean;
-  findings: ApiFinding[];
-};
+import {
+  createDraft,
+  listBrandRules,
+  listDrafts,
+  reviewContent,
+  createBrandRule,
+  saveReviewDecision,
+  getReviewDecisions,
+  getAllReviewDecisions,
+  type ApiFinding,
+  type BrandRuleResponse,
+  type DraftResponse,
+  type ReviewDecisionResponse,
+} from "./api";
 
 type Finding = {
   id: number;
@@ -38,6 +22,8 @@ type Finding = {
   explanation: string;
   suggestion: string;
   rule: string;
+  matchedText: string;
+  advisory: boolean;
 };
 
 type Rule = {
@@ -46,33 +32,39 @@ type Rule = {
   description: string;
   blockedPhrase: string;
   suggestion: string;
+  ruleType: "forbidden_term" | "required_term" | "approved_fact";
+  active: boolean;
 };
 
-const initialRules: Rule[] = [
-  {
-    id: 1,
-    title: "Avoid guaranteed claims",
-    description: "Do not promise outcomes that cannot be guaranteed.",
-    blockedPhrase: "guaranteed results",
-    suggestion: "results may vary",
-  },
-  {
-    id: 2,
-    title: "Avoid artificial urgency",
-    description: "Avoid pressure-based promotional wording.",
-    blockedPhrase: "buy now or miss out",
-    suggestion: "explore the offer",
-  },
-  {
-    id: 3,
-    title: "Use approved terminology",
-    description: 'Use "customers" instead of "consumers".',
-    blockedPhrase: "consumers",
-    suggestion: "customers",
-  },
-];
+const toFinding = (finding: ApiFinding, index: number): Finding => {
+  const severity = finding.severity.toLowerCase();
 
+  return {
+    id: finding.id ?? index + 1,
+    phrase: finding.matched_text ?? "",
+    matchedText: finding.matched_text ?? "",
+    severity:
+      severity === "high"
+        ? "High"
+        : severity === "low"
+          ? "Low"
+          : "Medium",
+    explanation: finding.explanation ?? finding.message,
+    suggestion: finding.suggestion ?? "Review this content manually.",
+    rule: finding.type.replaceAll("_", " "),
+    advisory: finding.advisory,
+  };
+};
 
+const toRule = (rule: BrandRuleResponse): Rule => ({
+  id: rule.id,
+  title: rule.name,
+  description: rule.description ?? "",
+  blockedPhrase: rule.value,
+  suggestion: "",
+  ruleType: rule.rule_type as Rule["ruleType"],
+  active: rule.is_active,
+});
 
 function App() {
   const [page, setPage] = useState<"Review" | "Brand rules" | "History">(
@@ -81,176 +73,239 @@ function App() {
   const [draft, setDraft] = useState("");
   const [contentType, setContentType] = useState("Social media");
   const [findings, setFindings] = useState<Finding[]>([]);
-  const [rules, setRules] = useState(initialRules);
+  const [rules, setRules] = useState<Rule[]>([]);
   const [reviewed, setReviewed] = useState(false);
   const [comment, setComment] = useState("");
+  const [reviewer, setReviewer] = useState("Demo Reviewer");
   const [status, setStatus] = useState("Draft");
   const [notice, setNotice] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const [rulePhrase, setRulePhrase] = useState("");
   const [ruleSuggestion, setRuleSuggestion] = useState("");
-const [isReviewing, setIsReviewing] = useState(false);
- const runReview = async () => {
-  if (!draft.trim()) {
-    setNotice("Add some content before starting the review.");
-    return;
-  }
+  const [ruleType, setRuleType] =
+    useState<Rule["ruleType"]>("forbidden_term");
+  const [draftId, setDraftId] = useState<number | null>(null);
+  const [savedDrafts, setSavedDrafts] = useState<DraftResponse[]>([]);
+  const [decisions, setDecisions] = useState<ReviewDecisionResponse[]>([]);
+  const [busy, setBusy] = useState(false);
 
-  if (draft.length > 10000) {
-    setNotice("Review content must be 10,000 characters or fewer.");
-    return;
-  }
+  useEffect(() => {
+    void loadInitialData();
+  }, []);
 
-  setIsReviewing(true);
-  setNotice("");
-
+  const loadInitialData = async () => {
   try {
-   // Create a fresh backend draft for every review so the saved
-// content always matches the text being reviewed.
-const draftResponse = await fetch(`${API_BASE_URL}/api/drafts/`, {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    title: `${contentType} draft`,
-    content: draft,
-    content_type: contentType,
-  }),
-});
-
-if (!draftResponse.ok) {
-  const error = await draftResponse.json().catch(() => null);
-  throw new Error(
-    error?.detail || `Draft creation failed (${draftResponse.status}).`,
-  );
-}
-
-const createdDraft: ApiDraft = await draftResponse.json();
-const draftId = createdDraft.id;
-
-
-    // Ask the real backend review engine to evaluate the draft.
-    const reviewResponse = await fetch(`${API_BASE_URL}/api/review`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        draft_id: draftId,
-        text: draft,
-      }),
-    });
-
-    if (!reviewResponse.ok) {
-      const error = await reviewResponse.json().catch(() => null);
-      throw new Error(
-        error?.detail || `Review failed (${reviewResponse.status}).`,
-      );
-    }
-
-    const result: ApiReview = await reviewResponse.json();
-
-    const mappedFindings: Finding[] = result.findings.map(
-      (finding, index) => {
-        const severity = finding.severity.toLowerCase();
-
-        return {
-          id: index + 1,
-          phrase: finding.matched_text || finding.message,
-          severity:
-            severity === "high" || severity === "critical"
-              ? "High"
-              : severity === "low" ||
-                  severity === "info" ||
-                  severity === "informational"
-                ? "Low"
-                : "Medium",
-          explanation:
-            finding.explanation || finding.message,
-          suggestion:
-            finding.suggestion || "Review this wording manually.",
-          rule: finding.type,
-        };
-      },
-    );
-
-    setFindings(mappedFindings);
-    setReviewed(true);
-
-    const backendStatus = result.status.toLowerCase();
-
-    setStatus(
-      backendStatus === "needs_review"
-        ? "Needs review"
-        : backendStatus === "advisory_review"
-          ? "Advisory review"
-          : "Ready for approval",
-    );
-
-    setNotice(
-      mappedFindings.length === 0
-        ? "Backend review complete. No findings were returned. Human review is still recommended."
-        : `Backend review complete: ${mappedFindings.length} finding(s) detected.`,
-    );
-
-    setHistory((items) => [
-      `${new Date().toLocaleString()} — Backend review completed (${mappedFindings.length} finding(s))`,
-      ...items,
+    const [loadedRules, loadedDrafts, loadedDecisions] = await Promise.all([
+      listBrandRules(),
+      listDrafts(),
+      getAllReviewDecisions(),
     ]);
+
+    setRules(loadedRules.map(toRule));
+    setSavedDrafts(loadedDrafts);
+    setDecisions(loadedDecisions);
+    setNotice("Connected to the BrandLens backend.");
   } catch (error) {
     setNotice(
-      error instanceof Error
-        ? error.message
-        : "Unable to connect to the BrandLens API.",
+      `Could not load backend data. Ensure FastAPI is running. ${
+        error instanceof Error ? error.message : ""
+      }`,
     );
-      } finally {
-    setIsReviewing(false);
   }
 };
 
-   const applySuggestion = (finding: Finding) => {
-    const escaped = finding.phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const updated = draft.replace(
-      new RegExp(escaped, "i"),
-      finding.suggestion,
-    );
-
-    setDraft(updated);
-    setFindings((items) => items.filter((item) => item.id !== finding.id));
-    setNotice("Suggestion applied. Review the updated draft before approval.");
-    setStatus("Changes made");
-  };
-
-
-  const addRule = () => {
-    if (!rulePhrase.trim() || !ruleSuggestion.trim()) {
-      setNotice("Enter both a phrase to flag and its suggested replacement.");
+  const runReview = async () => {
+    if (!draft.trim()) {
+      setNotice("Add some content before starting the review.");
       return;
     }
 
-    setRules((items) => [
-      ...items,
-      {
-        id: Math.max(0, ...items.map((item) => item.id)) + 1,
-        title: `Custom rule ${items.length + 1}`,
-        description: `Flag "${rulePhrase}" and suggest "${ruleSuggestion}".`,
-        blockedPhrase: rulePhrase.trim(),
-        suggestion: ruleSuggestion.trim(),
-      },
-    ]);
-    setRulePhrase("");
-    setRuleSuggestion("");
-    setNotice("Rule added to this session.");
+    setBusy(true);
+    setNotice("");
+
+    try {
+      let activeDraftId = draftId;
+
+      if (activeDraftId === null) {
+        const savedDraft = await createDraft(
+          `BrandLens ${contentType} Draft`,
+          draft,
+          contentType,
+        );
+
+        activeDraftId = savedDraft.id;
+        setDraftId(savedDraft.id);
+        setSavedDrafts((items) => [savedDraft, ...items]);
+      }
+
+      const result = await reviewContent(activeDraftId, draft);
+      const mappedFindings = result.findings.map(toFinding);
+
+      setFindings(mappedFindings);
+      setReviewed(true);
+
+      const hasHighSeverityFinding = mappedFindings.some(
+        (finding) => finding.severity === "High",
+      );
+
+      const nextStatus = hasHighSeverityFinding
+        ? "Needs review"
+        : mappedFindings.length > 0
+          ? "Advisory review"
+          : "Ready for approval";
+
+      setStatus(nextStatus);
+      setHistory((items) => [
+        `${new Date().toLocaleString()} — Draft #${activeDraftId} reviewed (${mappedFindings.length} finding(s))`,
+        ...items,
+      ]);
+      setNotice(
+        mappedFindings.length === 0
+          ? "Review complete. No findings were returned; human review is still recommended."
+          : `Review complete: ${mappedFindings.length} finding(s) detected.`,
+      );
+    } catch (error) {
+      setNotice(
+        `Review failed: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const decide = (decision: "Approved" | "Changes requested") => {
-    setStatus(decision);
+  const applySuggestion = (finding: Finding) => {
+    if (!finding.suggestion || !finding.phrase) {
+      setNotice("No automatic suggestion is available for this finding.");
+      return;
+    }
+
+    const escaped = finding.phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const updated = draft.replace(new RegExp(escaped, "i"), finding.suggestion);
+
+    setDraft(updated);
+    setReviewed(false);
+    setStatus("Changes made");
     setNotice(
-      decision === "Approved"
-        ? "Draft marked approved in this local prototype."
-        : "Changes requested. The draft owner can revise the content.",
+      "Suggestion applied locally. Review the updated draft to save the changes.",
     );
-    setHistory((items) => [
-      `${new Date().toLocaleString()} — ${decision}${comment ? `: ${comment}` : ""}`,
-      ...items,
-    ]);
+  };
+
+  const addRule = async () => {
+    if (!rulePhrase.trim()) {
+      setNotice("Enter a rule name or phrase first.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      const created = await createBrandRule({
+        name: `Custom rule: ${rulePhrase.trim()}`,
+        rule_type: ruleType,
+        value: rulePhrase.trim(),
+        description: ruleSuggestion.trim() || undefined,
+      });
+
+      setRules((items) => [toRule(created), ...items]);
+      setRulePhrase("");
+      setRuleSuggestion("");
+      setNotice("Brand rule saved to the backend.");
+    } catch (error) {
+      setNotice(
+        `Could not save the rule: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const decide = async (decision: "approved" | "changes_requested") => {
+    if (draftId === null) {
+      setNotice("Review and save a draft before recording a decision.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      const savedDecision = await saveReviewDecision(
+        draftId,
+        decision,
+        reviewer.trim() || "Demo Reviewer",
+        comment,
+      );
+
+      setDecisions((items) => [savedDecision, ...items]);
+      setStatus(
+        decision === "approved" ? "Approved" : "Changes requested",
+      );
+      setHistory((items) => [
+        `${new Date().toLocaleString()} — Draft #${draftId}: ${decision}${
+          comment ? ` — ${comment}` : ""
+        }`,
+        ...items,
+      ]);
+      setNotice("Reviewer decision saved successfully.");
+    } catch (error) {
+      setNotice(
+        `Could not save the decision: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openDraft = async (selectedId: number) => {
+    setBusy(true);
+
+    try {
+      const selected = savedDrafts.find((item) => item.id === selectedId);
+
+      if (!selected) {
+        setNotice("Draft not found in the loaded list.");
+        return;
+      }
+
+      setDraftId(selected.id);
+      setDraft(selected.content);
+      setContentType(selected.content_type ?? "Social media");
+      setStatus(
+        selected.status
+          .replaceAll("_", " ")
+          .replace(/\b\w/g, (letter) => letter.toUpperCase()),
+      );
+
+      const [reviewHistory, savedDecisions] = await Promise.all([
+        fetch(`http://127.0.0.1:8000/api/drafts/${selected.id}/findings`),
+        getReviewDecisions(selected.id),
+      ]);
+
+      if (reviewHistory.ok) {
+        const body = (await reviewHistory.json()) as {
+          findings: ApiFinding[];
+        };
+        setFindings(body.findings.map(toFinding));
+        setReviewed(true);
+      }
+
+      setDecisions(savedDecisions);
+      setPage("Review");
+      setNotice(`Loaded draft #${selected.id}.`);
+    } catch (error) {
+      setNotice(
+        `Could not load the draft: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -329,7 +384,11 @@ const draftId = createdDraft.id;
                     Check drafts against your brand rules before they go live.
                   </p>
                 </div>
-                <span className={`status-badge ${status.toLowerCase().replaceAll(" ", "-")}`}>
+                <span
+                  className={`status-badge ${status
+                    .toLowerCase()
+                    .replaceAll(" ", "-")}`}
+                >
                   <span className="status-dot" />
                   {status}
                 </span>
@@ -352,7 +411,11 @@ const draftId = createdDraft.id;
                   </div>
                 </div>
                 <div className="step-line" />
-                <div className={`workflow-step ${status === "Approved" ? "complete" : ""}`}>
+                <div
+                  className={`workflow-step ${
+                    status === "Approved" ? "complete" : ""
+                  }`}
+                >
                   <span>03</span>
                   <div>
                     <strong>Decision</strong>
@@ -393,24 +456,45 @@ const draftId = createdDraft.id;
                       setReviewed(false);
                       setStatus("Draft");
                     }}
-                    placeholder="Paste your marketing copy here. BrandLens will check it against the configured demo rules..."
+                    placeholder="Paste your marketing copy here..."
                     rows={12}
                   />
 
                   <div className="editor-footer">
                     <span>{draft.length} characters</span>
-                    <span>{draft.trim() ? draft.trim().split(/\s+/).length : 0} words</span>
+                    <span>
+                      {draft.trim() ? draft.trim().split(/\s+/).length : 0} words
+                    </span>
                   </div>
-<button
-  className="primary-button full-button"
-  onClick={runReview}
-  disabled={isReviewing}
->
-  <span>✳</span> {isReviewing ? "Reviewing..." : "Review content"}
-</button>
+
+                  <button
+                    className="primary-button full-button"
+                    onClick={runReview}
+                    disabled={busy}
+                  >
+                    <span>✳</span> {busy ? "Working..." : "Review content"}
+                  </button>
+
+                  <label htmlFor="saved-drafts">Load saved draft</label>
+                  <select
+                    id="saved-drafts"
+                    value={draftId ?? ""}
+                    onChange={(event) => {
+                      const id = Number(event.target.value);
+                      if (id) void openDraft(id);
+                    }}
+                  >
+                    <option value="">Select a saved draft</option>
+                    {savedDrafts.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        #{item.id} — {item.title}
+                      </option>
+                    ))}
+                  </select>
 
                   <p className="helper-text">
-                    Demo rule-based review. No content is published automatically.
+                    Content is reviewed by the backend. Nothing is published
+                    automatically.
                   </p>
                 </section>
 
@@ -432,8 +516,8 @@ const draftId = createdDraft.id;
                       <div className="empty-icon">⌕</div>
                       <h3>Ready when you are</h3>
                       <p>
-                        Submit a draft to see potential brand-rule conflicts,
-                        explanations, and suggested edits.
+                        Submit a draft to see brand-rule conflicts and
+                        suggestions from the backend.
                       </p>
                       <button
                         className="text-button"
@@ -449,10 +533,10 @@ const draftId = createdDraft.id;
                   ) : findings.length === 0 ? (
                     <div className="empty-state success-state">
                       <div className="empty-icon">✓</div>
-                      <h3>No matching issues found</h3>
+                      <h3>No findings returned</h3>
                       <p>
-                        This demo check did not find any phrases covered by the
-                        current rules. A human reviewer should still verify the draft.
+                        The backend did not identify any issues. Human review
+                        is still recommended.
                       </p>
                     </div>
                   ) : (
@@ -460,18 +544,25 @@ const draftId = createdDraft.id;
                       {findings.map((finding) => (
                         <article className="finding-card" key={finding.id}>
                           <div className="finding-topline">
-                            <span className={`severity ${finding.severity.toLowerCase()}`}>
+                            <span
+                              className={`severity ${finding.severity.toLowerCase()}`}
+                            >
                               {finding.severity}
                             </span>
                             <span className="rule-reference">{finding.rule}</span>
                           </div>
                           <h3>Potential brand-rule conflict</h3>
                           <p className="matched-phrase">
-                            Flagged phrase: <strong>“{finding.phrase}”</strong>
+                            Flagged phrase:{" "}
+                            <strong>“{finding.phrase || finding.rule}”</strong>
                           </p>
-                          <p className="finding-explanation">{finding.explanation}</p>
+                          <p className="finding-explanation">
+                            {finding.explanation}
+                          </p>
                           <div className="suggestion-box">
-                            <span className="suggestion-label">SUGGESTED EDIT</span>
+                            <span className="suggestion-label">
+                              SUGGESTED EDIT
+                            </span>
                             <p>{finding.suggestion}</p>
                           </div>
                           <div className="finding-actions">
@@ -505,6 +596,15 @@ const draftId = createdDraft.id;
                       </div>
                       <span className="human-tag">Reviewer decision</span>
                     </div>
+
+                    <label htmlFor="reviewer-name">Reviewer name</label>
+                    <input
+                      id="reviewer-name"
+                      value={reviewer}
+                      onChange={(event) => setReviewer(event.target.value)}
+                      placeholder="Reviewer name"
+                    />
+
                     <label htmlFor="review-comment">Reviewer comments</label>
                     <textarea
                       id="review-comment"
@@ -513,23 +613,30 @@ const draftId = createdDraft.id;
                       onChange={(event) => setComment(event.target.value)}
                       placeholder="Add feedback or explain requested changes..."
                     />
+
                     <div className="decision-actions">
                       <button
                         className="secondary-button"
-                        onClick={() => decide("Changes requested")}
+                        onClick={() => void decide("changes_requested")}
+                        disabled={busy || draftId === null}
                       >
                         Request changes
                       </button>
                       <button
                         className="primary-button"
-                        onClick={() => decide("Approved")}
+                        onClick={() => void decide("approved")}
+                        disabled={busy || draftId === null}
                       >
                         ✓ Approve draft
                       </button>
                     </div>
-                    <p className="helper-text">
-                      Prototype only: decisions are not saved to a server.
-                    </p>
+
+                    {draftId === null && (
+                      <p className="helper-text">
+                        Review the draft first to save it before recording a
+                        decision.
+                      </p>
+                    )}
                   </div>
                 </section>
               </div>
@@ -542,7 +649,7 @@ const draftId = createdDraft.id;
                 <div>
                   <div className="eyebrow">GOVERNANCE SETTINGS</div>
                   <h1>Brand rules</h1>
-                  <p>Manage the phrases checked by this local prototype.</p>
+                  <p>Manage the rules stored in your backend.</p>
                 </div>
                 <span className="neutral-tag">{rules.length} rules</span>
               </section>
@@ -551,7 +658,7 @@ const draftId = createdDraft.id;
                 <div className="panel-heading">
                   <div>
                     <h2>Configured rules</h2>
-                    <p>Rules are stored in this browser session only.</p>
+                    <p>Rules are retrieved from the backend database.</p>
                   </div>
                 </div>
 
@@ -563,37 +670,66 @@ const draftId = createdDraft.id;
                         <h3>{rule.title}</h3>
                         <p>{rule.description}</p>
                         <div className="rule-phrases">
-                          <span>Flag: “{rule.blockedPhrase}”</span>
-                          <span>Suggest: “{rule.suggestion}”</span>
+                          <span>Value: “{rule.blockedPhrase}”</span>
+                          <span>Type: {rule.ruleType}</span>
                         </div>
                       </div>
                     </article>
                   ))}
+                  {rules.length === 0 && (
+                    <p>No saved rules found. Add a rule below.</p>
+                  )}
                 </div>
 
                 <div className="add-rule-section">
-                  <h2>Add a demo rule</h2>
-                  <p>Enter a phrase to flag and the suggested replacement.</p>
+                  <h2>Add a brand rule</h2>
+                  <p>The rule will be saved in the backend database.</p>
+
                   <div className="rule-form">
                     <div>
-                      <label htmlFor="blocked-phrase">Phrase to flag</label>
+                      <label htmlFor="blocked-phrase">Rule value</label>
                       <input
                         id="blocked-phrase"
                         value={rulePhrase}
                         onChange={(event) => setRulePhrase(event.target.value)}
-                        placeholder="e.g. best in the world"
+                        placeholder="e.g. guaranteed"
                       />
                     </div>
+
                     <div>
-                      <label htmlFor="replacement-phrase">Suggested replacement</label>
+                      <label htmlFor="replacement-phrase">
+                        Description or source
+                      </label>
                       <input
                         id="replacement-phrase"
                         value={ruleSuggestion}
-                        onChange={(event) => setRuleSuggestion(event.target.value)}
-                        placeholder="e.g. designed for you"
+                        onChange={(event) =>
+                          setRuleSuggestion(event.target.value)
+                        }
+                        placeholder="Describe this rule"
                       />
                     </div>
-                    <button className="primary-button" onClick={addRule}>
+
+                    <div>
+                      <label htmlFor="rule-type">Rule type</label>
+                      <select
+                        id="rule-type"
+                        value={ruleType}
+                        onChange={(event) =>
+                          setRuleType(event.target.value as Rule["ruleType"])
+                        }
+                      >
+                        <option value="forbidden_term">Forbidden term</option>
+                        <option value="required_term">Required term</option>
+                        <option value="approved_fact">Approved fact</option>
+                      </select>
+                    </div>
+
+                    <button
+                      className="primary-button"
+                      onClick={() => void addRule()}
+                      disabled={busy}
+                    >
                       + Add rule
                     </button>
                   </div>
@@ -608,29 +744,52 @@ const draftId = createdDraft.id;
                 <div>
                   <div className="eyebrow">ACTIVITY LOG</div>
                   <h1>Review history</h1>
-                  <p>See review and decision activity in this session.</p>
+                  <p>See saved reviewer decisions and current session activity.</p>
                 </div>
-                <span className="neutral-tag">{history.length} events</span>
+                <span className="neutral-tag">
+                  {history.length + decisions.length} events
+                </span>
               </section>
 
               <section className="panel history-panel">
-                {history.length === 0 ? (
+                {history.length === 0 && decisions.length === 0 ? (
                   <div className="empty-state">
                     <div className="empty-icon">◷</div>
                     <h3>No activity yet</h3>
-                    <p>Review a draft or record a reviewer decision to see activity here.</p>
-                    <button className="text-button" onClick={() => setPage("Review")}>
+                    <p>Review a draft or record a reviewer decision.</p>
+                    <button
+                      className="text-button"
+                      onClick={() => setPage("Review")}
+                    >
                       Go to content review →
                     </button>
                   </div>
                 ) : (
                   <div className="history-list">
+                    {decisions.map((decision) => (
+                      <div
+                        className="history-entry"
+                        key={`decision-${decision.id}`}
+                      >
+                        <span className="history-marker">✓</span>
+                        <div>
+                          <p>
+                            Draft #{decision.draft_id}: {decision.decision}
+                          </p>
+                          <span>
+                            {decision.reviewer ?? "Reviewer"}{" "}
+                            {decision.comments ? `— ${decision.comments}` : ""}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+
                     {history.map((entry, index) => (
                       <div className="history-entry" key={`${entry}-${index}`}>
                         <span className="history-marker">✓</span>
                         <div>
                           <p>{entry}</p>
-                          <span>Local prototype activity</span>
+                          <span>Session activity</span>
                         </div>
                       </div>
                     ))}
