@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.database import get_db
+from app.database import create_tables, get_db
 from app.draft_routes import router as draft_router
 from app.decision_routes import router as decision_router
 from app.models import BrandRule, Draft, ReviewFinding
@@ -38,6 +38,9 @@ review_engine = ReviewEngine()
 app.include_router(draft_router)
 app.include_router(rule_router)
 app.include_router(decision_router)
+@app.on_event("startup")
+def initialize_database():
+    create_tables()
 
 # --------------------------------------------------
 # Request Models
