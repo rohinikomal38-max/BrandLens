@@ -4,6 +4,17 @@ BrandLens is a brand-governance platform that helps teams review marketing conte
 
 **Project status:** Frontend prototype in development.
 
+## 🚀 Live Demo
+
+**Try BrandLens live:** [Open BrandLens](https://brand-lens-seven.vercel.app)
+
+- **Frontend:** https://brand-lens-seven.vercel.app
+- **Backend API:** https://brandlens-backend.onrender.com
+- **API Documentation:** https://brandlens-backend.onrender.com/docs
+- **Health Check:** https://brandlens-backend.onrender.com/health
+
+BrandLens helps teams review content against brand guidelines and manage brand-governance decisions through a web-based platform.
+
 ## Problem Statement
 
 Marketing teams must maintain consistent terminology, accurate claims, and approved messaging across different channels. Manual content reviews can be time-consuming, inconsistent, and difficult to track.
