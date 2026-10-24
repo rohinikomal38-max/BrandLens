@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Draft
+from app.models import Draft, ReviewDecision
 
 
 router = APIRouter(prefix="/api/drafts", tags=["Drafts"])
@@ -60,3 +60,97 @@ def get_draft(
         raise HTTPException(status_code=404, detail="Draft not found")
 
     return draft
+class ReviewDecisionCreate(BaseModel):
+    decision: str = Field(
+        ...,
+        pattern="^(approved|changes_requested)$",
+    )
+    reviewer: str | None = Field(default=None, max_length=200)
+    comments: str | None = Field(default=None, max_length=5000)
+
+
+class ReviewDecisionResponse(BaseModel):
+    id: int
+    draft_id: int
+    decision: str
+    reviewer: str | None
+    comments: str | None
+
+    model_config = {"from_attributes": True}
+
+
+@router.post(
+    "/{draft_id}/decisions",
+    response_model=ReviewDecisionResponse,
+    status_code=201,
+)
+def create_review_decision(
+    draft_id: int,
+    request: ReviewDecisionCreate,
+    db: Session = Depends(get_db),
+):
+    draft = (
+        db.query(Draft)
+        .filter(Draft.id == draft_id)
+        .first()
+    )
+
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Draft not found",
+        )
+
+    decision = ReviewDecision(
+        draft_id=draft_id,
+        decision=request.decision,
+        reviewer=request.reviewer,
+        comments=request.comments,
+    )
+
+    db.add(decision)
+
+    if request.decision == "approved":
+        draft.status = "approved"
+    else:
+        draft.status = "changes_requested"
+
+    try:
+        db.commit()
+        db.refresh(decision)
+    except Exception as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail="Review decision could not be saved.",
+        ) from error
+
+    return decision
+
+
+@router.get(
+    "/{draft_id}/decisions",
+    response_model=list[ReviewDecisionResponse],
+)
+def get_review_decisions(
+    draft_id: int,
+    db: Session = Depends(get_db),
+):
+    draft = (
+        db.query(Draft)
+        .filter(Draft.id == draft_id)
+        .first()
+    )
+
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Draft not found",
+        )
+
+    return (
+        db.query(ReviewDecision)
+        .filter(ReviewDecision.draft_id == draft_id)
+        .order_by(ReviewDecision.id.desc())
+        .all()
+    )

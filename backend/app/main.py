@@ -1,11 +1,13 @@
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.draft_routes import router as draft_router
+from app.decision_routes import router as decision_router
 from app.models import BrandRule, Draft, ReviewFinding
 from app.review_engine.engine import ReviewEngine
 from app.review_engine.models import ApprovedFact
@@ -17,12 +19,26 @@ app = FastAPI(
     description="Backend API for the BrandLens brand-governance platform.",
     version="1.0.0",
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 review_engine = ReviewEngine()
 
 app.include_router(draft_router)
 app.include_router(rule_router)
+app.include_router(decision_router)
 
+# --------------------------------------------------
+# Request Models
+# --------------------------------------------------
 
 class ReviewRequest(BaseModel):
     draft_id: int | None = Field(
@@ -43,6 +59,10 @@ class ReviewRequest(BaseModel):
     approved_facts: List[str] = Field(default_factory=list)
 
 
+# --------------------------------------------------
+# Basic API Endpoints
+# --------------------------------------------------
+
 @app.get("/")
 def root():
     return {
@@ -58,6 +78,10 @@ def health_check():
         "service": "BrandLens API",
     }
 
+
+# --------------------------------------------------
+# Review Marketing Content
+# --------------------------------------------------
 
 @app.post("/api/review")
 def review_content(
@@ -119,7 +143,7 @@ def review_content(
         approved_facts=approved_facts,
     )
 
-        # Save the latest findings and update the review status.
+    # Save the latest findings and update the review status.
     try:
         if draft is not None:
             # Remove findings from the previous review.
@@ -163,7 +187,7 @@ def review_content(
             status_code=500,
             detail="Review findings and status could not be saved.",
         ) from error
-    
+
     # Return the review result.
     return {
         "status": result.status,
@@ -182,5 +206,57 @@ def review_content(
                 "end": finding.end,
             }
             for finding in result.findings
+        ],
+    }
+
+
+# --------------------------------------------------
+# Retrieve Saved Review Findings for a Draft
+# --------------------------------------------------
+
+@app.get("/api/drafts/{draft_id}/findings")
+def get_draft_findings(
+    draft_id: int,
+    db: Session = Depends(get_db),
+):
+    # Check whether the draft exists.
+    draft = (
+        db.query(Draft)
+        .filter(Draft.id == draft_id)
+        .first()
+    )
+
+    if draft is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Draft not found",
+        )
+
+    # Retrieve saved findings for this draft.
+    findings = (
+        db.query(ReviewFinding)
+        .filter(ReviewFinding.draft_id == draft_id)
+        .order_by(ReviewFinding.id.asc())
+        .all()
+    )
+
+    return {
+        "draft_id": draft_id,
+        "total_findings": len(findings),
+        "findings": [
+            {
+                "id": finding.id,
+                "type": finding.finding_type,
+                "severity": finding.severity,
+                "message": finding.message,
+                "matched_text": finding.matched_text,
+                "explanation": finding.explanation,
+                "evidence": finding.evidence,
+                "suggestion": finding.suggestion,
+                "advisory": finding.advisory,
+                "start": finding.start,
+                "end": finding.end,
+            }
+            for finding in findings
         ],
     }
